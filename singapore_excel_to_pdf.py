@@ -11,6 +11,7 @@ if sys.stderr is None:
 
 import re
 import glob
+import calendar
 import datetime
 import threading
 import tkinter as tk
@@ -33,6 +34,7 @@ except ImportError:
 
 
 # Extraction rules for the 4 target sheets
+# month_filter=True: the sheet is split into monthly blocks and the month typed in the GUI can be applied
 # font_size applies to every cell in the table, including the header rows
 SHEET_CONFIGS = [
     {
@@ -45,6 +47,7 @@ SHEET_CONFIGS = [
         "target_name": "2026 Sequencing",
         "cols": list(range(1, column_index_from_string("H") + 1)),
         "pdf_prefix": "2026 Sequencing Detail",
+        "month_filter": True,
         "font_size": 5.0,
     },
     {
@@ -57,6 +60,7 @@ SHEET_CONFIGS = [
         "target_name": "Oligo 2026",
         "cols": [column_index_from_string(c) for c in ["A", "B", "C", "D", "E", "F", "J"]],
         "pdf_prefix": "Oligo 2026 Detail",
+        "month_filter": True,
         "font_size": 5.0,
     },
 ]
@@ -145,13 +149,89 @@ def set_cell_border_from_excel(docx_cell, excel_cell):
         tcPr.append(tcBorders)
 
 
-def get_valid_rows_and_merges(ws, target_cols: list, sheet_name: str):
-    """Extract all non-empty rows in the target columns and build the merge list."""
+# ---------- Month filter (detail sheets) ----------
+
+MONTH_LOOKUP = {}
+for _i in range(1, 13):
+    MONTH_LOOKUP[calendar.month_name[_i].lower()] = _i
+    MONTH_LOOKUP[calendar.month_abbr[_i].lower()] = _i
+MONTH_LOOKUP["sept"] = 9
+_CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+           "十": 10, "十一": 11, "十二": 12}
+
+
+def parse_month_input(text: str):
+    """Return a month number (1-12), or None if the input is blank. Raise ValueError if invalid.
+    Accepts: 10, 10月, Oct, October, and Chinese numerals such as 十月."""
+    s = text.strip().lower().rstrip(".")
+    if not s:
+        return None
+    if s.endswith("月"):
+        s = s[:-1].strip()
+    if s.isdigit():
+        n = int(s)
+    elif s in MONTH_LOOKUP:
+        n = MONTH_LOOKUP[s]
+    elif s in _CN_NUM:
+        n = _CN_NUM[s]
+    else:
+        raise ValueError(text)
+    if not 1 <= n <= 12:
+        raise ValueError(text)
+    return n
+
+
+def detect_month_title(ws, r: int, target_cols: list):
+    """If row r is a month title row, return its month number, else None.
+    A title row has content in the first target column only, and is either a date
+    (e.g. 2026-01-01) or text such as 'OCTOBER 2026' / 'OCTOBER 2026 BBAP-088'."""
+    first = ws.cell(r, target_cols[0]).value
+    if first is None or str(first).strip() == "":
+        return None
+    for c in target_cols[1:]:
+        v = ws.cell(r, c).value
+        if v is not None and str(v).strip() != "":
+            return None
+    if isinstance(first, (datetime.datetime, datetime.date)):
+        return first.month
+    m = re.match(r"^\s*([A-Za-z]+)\.?\s+(\d{4})\b", str(first))
+    if m:
+        return MONTH_LOOKUP.get(m.group(1).lower())
+    return None
+
+
+def find_month_blocks(ws, target_cols: list):
+    """Split the sheet into monthly blocks. Returns [(month, start_row, end_row), ...].
+    A block runs from its title row to the row before the next title row."""
+    titles = []
+    for r in range(1, ws.max_row + 1):
+        m = detect_month_title(ws, r, target_cols)
+        if m:
+            titles.append((r, m))
+    blocks = []
+    for i, (r, m) in enumerate(titles):
+        end = titles[i + 1][0] - 1 if i + 1 < len(titles) else ws.max_row
+        blocks.append((m, r, end))
+    return blocks
+
+
+def get_valid_rows_and_merges(ws, target_cols: list, sheet_name: str, month=None):
+    """Extract all non-empty rows in the target columns and build the merge list.
+    If month (1-12) is given, only the rows of that month's block are extracted."""
     col_set = set(target_cols)
     col_to_new_idx = {orig_col: idx for idx, orig_col in enumerate(target_cols)}
 
+    allowed_rows = None
+    if month is not None:
+        allowed_rows = set()
+        for m, start, end in find_month_blocks(ws, target_cols):
+            if m == month:
+                allowed_rows.update(range(start, end + 1))
+
     selected_rows = []
     for r in range(1, ws.max_row + 1):
+        if allowed_rows is not None and r not in allowed_rows:
+            continue
         row_has_data = any(
             ws.cell(r, c).value is not None and str(ws.cell(r, c).value).strip() != ""
             for c in target_cols
@@ -310,13 +390,14 @@ class AccountSummaryConverterApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Account Summary Batch Extractor & PDF Converter")
-        self.root.geometry("760x520")
+        self.root.geometry("760x550")
         self.root.resizable(True, True)
 
         self.input_dir_var = tk.StringVar()
         self.template_path_var = tk.StringVar()
         self.output_dir_var = tk.StringVar()
         self.keep_docx_var = tk.BooleanVar(value=False)
+        self.month_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready: select the Excel folder, Word template and output folder")
 
         self.is_running = False
@@ -344,6 +425,16 @@ class AccountSummaryConverterApp:
 
         opt_group = ttk.LabelFrame(main_frame, text=" Export Options ", padding="12 8 12 8")
         opt_group.pack(fill=tk.X, pady=(0, 10))
+
+        month_row = ttk.Frame(opt_group)
+        month_row.pack(fill=tk.X, pady=2)
+        ttk.Label(month_row, text="Month (detail sheets only):").pack(side=tk.LEFT)
+        ttk.Entry(month_row, textvariable=self.month_var, width=12).pack(side=tk.LEFT, padx=8)
+        ttk.Label(
+            month_row,
+            text="e.g. 10, Oct or October. Leave blank to convert all months.",
+            foreground="#666666",
+        ).pack(side=tk.LEFT)
 
         ttk.Checkbutton(
             opt_group,
@@ -429,6 +520,12 @@ class AccountSummaryConverterApp:
             messagebox.showerror("Path error", "Please specify the PDF output folder!")
             return
 
+        try:
+            month = parse_month_input(self.month_var.get())
+        except ValueError:
+            messagebox.showerror("Input error", "Invalid month. Enter 1-12 or a month name such as Oct or October.")
+            return
+
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.delete("1.0", tk.END)
         self.log_text.configure(state=tk.DISABLED)
@@ -439,12 +536,12 @@ class AccountSummaryConverterApp:
 
         worker = threading.Thread(
             target=self._run_batch_worker,
-            args=(input_dir, template_path, output_dir, self.keep_docx_var.get()),
+            args=(input_dir, template_path, output_dir, self.keep_docx_var.get(), month),
             daemon=True,
         )
         worker.start()
 
-    def _run_batch_worker(self, input_dir: str, template_path: str, output_dir: str, keep_docx: bool):
+    def _run_batch_worker(self, input_dir: str, template_path: str, output_dir: str, keep_docx: bool, month=None):
         if pythoncom is not None:
             pythoncom.CoInitialize()
 
@@ -468,6 +565,8 @@ class AccountSummaryConverterApp:
             success_count = 0
 
             self.log(f"Found {len(all_xlsx)} Excel file(s). Starting batch processing...\n" + "=" * 55)
+            if month:
+                self.log(f"Month filter: {calendar.month_name[month]} (applies to the two detail sheets only)")
 
             for excel_path in all_xlsx:
                 base_name = os.path.basename(excel_path)
@@ -496,10 +595,16 @@ class AccountSummaryConverterApp:
                         continue
 
                     ws = wb[sheet_map[target_key]]
-                    rows_data, col_widths, merged_ranges, cell_objects = get_valid_rows_and_merges(ws, cfg["cols"], target_key)
+                    use_month = month if cfg.get("month_filter") else None
+                    rows_data, col_widths, merged_ranges, cell_objects = get_valid_rows_and_merges(
+                        ws, cfg["cols"], target_key, use_month
+                    )
 
                     if not rows_data:
-                        self.log(f"  [Skipped] Sheet '{cfg['target_name']}' has no content in the selected columns")
+                        if use_month:
+                            self.log(f"  [Skipped] No {calendar.month_name[use_month]} table found in sheet '{cfg['target_name']}'")
+                        else:
+                            self.log(f"  [Skipped] Sheet '{cfg['target_name']}' has no content in the selected columns")
                         continue
 
                     # File name: "<prefix> - <BBAP-xxx...>"
