@@ -1,4 +1,14 @@
 import os
+import sys
+
+# When packaged with PyInstaller in windowed (--noconsole/-w) mode, sys.stdout and
+# sys.stderr are None. docx2pdf shows a tqdm progress bar that writes to them, which
+# raises "'NoneType' object has no attribute 'write'". Redirect them to a null device.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
 import re
 import glob
 import datetime
