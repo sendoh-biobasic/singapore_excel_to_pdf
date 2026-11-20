@@ -33,16 +33,17 @@ except ImportError:
     pythoncom = None
 
 
-# Extraction rules for the 4 target sheets
+# Extraction rules for the target sheets (the two summary sheets are currently disabled)
 # month_filter=True: the sheet is split into monthly blocks and the month typed in the GUI can be applied
 # font_size applies to every cell in the table, including the header rows
 SHEET_CONFIGS = [
-    {
-        "target_name": "Account Summary",
-        "cols": list(range(1, column_index_from_string("T") + 1)),
-        "pdf_prefix": "Account Summary",
-        "font_size": 5.0,
-    },
+    # (disabled) summary sheet, uncomment to enable again
+    # {
+    #     "target_name": "Account Summary",
+    #     "cols": list(range(1, column_index_from_string("T") + 1)),
+    #     "pdf_prefix": "Account Summary",
+    #     "font_size": 5.0,
+    # },
     {
         "target_name": "2026 Sequencing",
         "cols": list(range(1, column_index_from_string("H") + 1)),
@@ -50,12 +51,13 @@ SHEET_CONFIGS = [
         "month_filter": True,
         "font_size": 5.0,
     },
-    {
-        "target_name": "Oligo Account Summary",
-        "cols": list(range(1, column_index_from_string("R") + 1)),
-        "pdf_prefix": "Oligo Account Summary",
-        "font_size": 5.0,
-    },
+    # (disabled) summary sheet, uncomment to enable again
+    # {
+    #     "target_name": "Oligo Account Summary",
+    #     "cols": list(range(1, column_index_from_string("R") + 1)),
+    #     "pdf_prefix": "Oligo Account Summary",
+    #     "font_size": 5.0,
+    # },
     {
         "target_name": "Oligo 2026",
         "cols": [column_index_from_string(c) for c in ["A", "B", "C", "D", "E", "F", "J"]],
